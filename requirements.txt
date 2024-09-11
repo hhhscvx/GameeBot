@@ -4,3 +4,6 @@ pydantic-settings==2.2.1
 pyrogram==2.0.106
 tgcrypto==1.2.5
 loguru==0.7.2
+better-proxy==1.2.0
+aiofiles==24.1.0
+fake_useragent==1.5.1
