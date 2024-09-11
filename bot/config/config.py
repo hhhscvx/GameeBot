@@ -7,5 +7,9 @@ class Settings(BaseSettings):
     API_ID: int
     API_HASH: str
 
+    REF_CODE: str = 'ref_1051277129'
+    USE_TICKETS_TO_SPIN: bool = True
+    MAX_USE_TICKETS_TO_SPIN: int = 100
+
 
 settings = Settings()

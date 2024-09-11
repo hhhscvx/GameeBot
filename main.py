@@ -25,7 +25,6 @@ async def main():
     await tg_client.start()
     gamee = Gamee(tg_client=tg_client)
 
-
     tg_web_data = await gamee.get_tg_web_data(proxy=None)
     tg_web_data_res = unquote(string=tg_web_data)
     print('tg_web_data_res:', tg_web_data_res)
@@ -48,7 +47,8 @@ async def main():
 
     http_client = ClientSession(headers=headers)
     try:
-        await gamee.login(http_client=http_client, tg_web_data=tg_web_data)
+        access_token = await gamee.login(http_client=http_client, tg_web_data=tg_web_data)
+        headers['Authorization'] = f'Bearer {access_token}'
     finally:
         await http_client.close()
     await tg_client.stop()
