@@ -1,18 +1,23 @@
 import asyncio
 import json
-from pprint import pprint
 from random import random
+import time
 from urllib.parse import unquote
+import uuid
 
+import aiofiles
 import aiohttp
 from better_proxy import Proxy
 from pyrogram.client import Client
 from pyrogram.errors import Unauthorized, UserDeactivated, AuthKeyUnregistered, FloodWait
 from pyrogram.raw.functions.messages import RequestWebView
+from aiohttp_proxy import ProxyConnector
+from fake_useragent import UserAgent
 
 from bot.exceptions import InvalidSession
 from bot.utils import logger
 from bot.config import settings
+from .headers import headers
 
 
 class Gamee:
@@ -197,7 +202,7 @@ class Gamee:
                 spin_using_ticket_price = daily_reward.get(
                     "dailyRewardBonusSpinsPriceTickets"
                 )
-                
+
                 tickets = resp_json["user"]["tickets"]["count"]
                 logger.info(f"{self.session_name} | Available tickets: {tickets}")
                 logger.info(
@@ -208,15 +213,164 @@ class Gamee:
             logger.error(f"{self.session_name} | Unknown error on Spin: {error}")
             await asyncio.sleep(delay=3)
 
-    async def start_mining(self, http_client: aiohttp.ClientSession):
-        ...
-
     async def claim_mining(self, http_client: aiohttp.ClientSession):
-        data_claim_mining = {
-            "jsonrpc": "2.0",
-            "id": "miningEvent.claim",
-            "method": "miningEvent.claim",
-            "params": {
-                "miningEventId": self.event_id,
-            },
-        }
+        try:
+            data = {
+                "jsonrpc": "2.0",
+                "id": "user.getActivities",
+                "method": "user.getActivities",
+                "params": {"filter": "all", "pagination": {"offset": 0, "limit": 100}},
+            }
+            resp = await http_client.post(
+                self.gamee_url,
+                json.dumps(data),
+            )
+            resp_json: dict = await resp.json()
+            result: dict = resp_json.get("result")
+            if result is None:
+                logger.error(f"{self.session_name} | Result not found in user activities")
+                return False
+            activities = result["activities"]
+            for activity in activities:
+                activity_id = activity["id"]
+                activity_type = activity["type"]
+                is_claim = activity["isClaimed"]
+                if is_claim:
+                    continue
+
+                logger.info(f"{self.session_name} | Activity type {activity_type}")
+                rewards = activity["rewards"]
+                virtual_token = rewards["virtualTokens"]
+                for token in virtual_token:
+                    name = token["currency"]["ticker"]
+                    amount = token["amountMicroToken"] / 1000000
+                    data = {
+                        "jsonrpc": "2.0",
+                        "id": "user.claimActivity",
+                        "method": "user.claimActivity",
+                        "params": {"activityId": activity_id},
+                    }
+                    resp = await http_client.post(
+                        self.gamee_url,
+                        json.dumps(data),
+                    )
+                    if resp.status_code != 200:
+                        logger.error(f"{self.session_name} | Error when claiming mining reward! (status code 200)")
+                        continue
+                    logger.success(f"{self.session_name} | Successfully claimed {amount} {name} !")
+        except Exception as error:
+            logger.error(f"{self.session_name} | Unknown error when claiming mining: {error}")
+            await asyncio.sleep(delay=3)
+
+    async def start_mining(self, http_client: aiohttp.ClientSession):
+        try:
+            event_id = 26
+            data = {
+                "jsonrpc": "2.0",
+                "id": "miningEvent.get",
+                "method": "miningEvent.get",
+                "params": {
+                    "miningEventId": event_id,
+                },
+            }
+            data_start_mining = {
+                "jsonrpc": "2.0",
+                "id": "miningEvent.startSession",
+                "method": "miningEvent.startSession",
+                "params": {"miningEventId": event_id},
+            }
+            data_claim_mining = {
+                "jsonrpc": "2.0",
+                "id": "miningEvent.claim",
+                "method": "miningEvent.claim",
+                "params": {
+                    "miningEventId": event_id,
+                },
+            }
+
+            resp = await http_client.post(
+                self.gamee_url,
+                json.dumps(data),
+            )
+            resp_json = await resp.json()
+            assets = resp_json["user"]["assets"]
+            for asset in assets:
+                currency = asset["currency"]["ticker"]
+                amount = asset["amountMicroToken"] / 1000000
+                logger.info(f"{self} | Balance: {amount} {currency}")
+
+            mining = resp_json["result"]["miningEvent"]["miningUser"]
+            if mining is None:
+                logger.error(f"{self.session_name} | Mining not started !")
+                while True:
+                    resp = await self.http(
+                        self.gamee_url,
+                        json.dumps(data_start_mining),
+                    )
+                    resp_json = await resp.json()
+                    if "error" in resp_json.keys():
+                        time.sleep(2)
+                        continue
+
+                    if "miningEvent" in resp_json["result"]:
+                        logger.success(f"{self.session_name} | Mining start successfully!")
+                        return
+            end = mining["miningSessionEnded"]
+            earn = mining["currentSessionMicroToken"] / 1000000
+            mine = mining["currentSessionMicroTokenMined"] / 1000000
+            total_mine = mining["cumulativeMicroTokenMined"] / 1000000
+
+            logger.info(f"{self.session_name} | Total mining: {total_mine}")
+            logger.info(f"{self.session_name} | Max mining: {earn}")
+            logger.info(f"{self.session_name} | Current mining: {mine}")
+
+            if end:
+                logger.info(f"{self.session_name} | Mining has end!")
+                while True:
+                    resp = await self.http(
+                        self.gamee_url,
+                        json.dumps(data_start_mining),
+                    )
+                    resp_json = await resp.json()
+                    result = resp_json["result"]
+                    error = resp_json.get("error")
+                    if error is not None:
+                        msg = error.get("message").lower()
+                        if msg == "mining session in progress.":
+                            logger.info(f"{self.session_name} | Mining in progress")
+                            return
+                        time.sleep(2)
+                        continue
+
+                    if result.get("miningEvent") is not None:
+                        logger.success(f"{self.session_name} | Mining start successfully!")
+                        return
+
+        except Exception as error:
+            logger.error(f"{self.session_name} | Unknown error when claiming mining: {error}")
+            await asyncio.sleep(delay=3)
+
+    async def run(self, proxy: str | None = None):
+        proxy_conn = ProxyConnector().from_url(proxy) if proxy else None
+        tg_web_data = await self.get_tg_web_data(proxy=None)
+        tg_web_data_res = unquote(string=tg_web_data)
+        print('tg_web_data_res:', tg_web_data_res)
+        user_id = tg_web_data_res.split('id":', maxsplit=1)[1].split(',"first_name', maxsplit=1)[0]
+        print('user_id:', user_id)
+
+        async with aiofiles.open(self.uuid_file) as uuidr:
+            uuids: dict = json.loads(await uuidr.read())
+
+        uuuid = uuids.get(user_id)
+        if uuuid is None:
+            print('uuuid is None')
+            uuuid = uuid.uuid4().__str__()
+            uuids[user_id] = uuuid
+            async with aiofiles.open(self.uuid_file, "w") as uw:
+                await uw.write(json.dumps(uuids))
+
+        headers['X-Install-Uuid'] = uuuid
+        headers['User-Agent'] = UserAgent(os='android').random
+
+        async with aiohttp.ClientSession(headers=headers, connector=proxy_conn) as http_client:
+            ...
