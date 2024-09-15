@@ -7,9 +7,11 @@ class Settings(BaseSettings):
     API_ID: int
     API_HASH: str
 
-    REF_CODE: str = 'ref_1051277129'
     USE_TICKETS_TO_SPIN: bool = True
     MAX_USE_TICKETS_TO_SPIN: int = 100
+    SLEEP_BETWEEN_FARM: list[int] = [1800, 2400]
+
+    USE_PROXY_FROM_FILE: bool = False
 
 
 settings = Settings()

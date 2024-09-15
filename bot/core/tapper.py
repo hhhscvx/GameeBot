@@ -1,7 +1,8 @@
 import asyncio
 import json
-from random import random
-import time
+from pprint import pprint
+from random import randint, random, uniform
+from time import time
 from urllib.parse import unquote
 import uuid
 
@@ -53,7 +54,7 @@ class Gamee:
                 except (Unauthorized, UserDeactivated, AuthKeyUnregistered):
                     raise InvalidSession(self.session_name)
 
-            await self.tg_client.send_message('gamee', f'/start {settings.REF_CODE}')
+            await self.tg_client.send_message('gamee', '/start')
             await asyncio.sleep(random() + 1)
 
             while True:
@@ -120,7 +121,6 @@ class Gamee:
             logger.error(f'{self.session_name} | Unknown error while getting Access Token: {error}')
 
     async def spin(self, http_client: aiohttp.ClientSession) -> tuple[str]:
-        """Бля тут недоделанная хуйня, надо подредачить будет как у akasakaid. а еще на тикеты купить спин и чекнуть запрос"""
         try:
             daily_get_prizes = {
                 "jsonrpc": "2.0",
@@ -143,7 +143,7 @@ class Gamee:
                 "params": {},
             }
 
-            resp = await http_client.post(self.gamee_url, data=json.dumps(daily_get_prizes))
+            resp = await http_client.post(url=self.gamee_url, data=json.dumps(daily_get_prizes))
 
             resp_json: dict = await resp.json()
 
@@ -160,7 +160,7 @@ class Gamee:
 
             if daily_spin > 0:
                 for _ in range(daily_spin):
-                    resp = await http_client.post(self.gamee_url, data=json.dumps(daily_claim_prizes))
+                    resp = await http_client.post(url=self.gamee_url, data=json.dumps(daily_claim_prizes))
                     resp_json = await resp.json()
 
                     reward_type = resp_json['result']['reward']['type']
@@ -172,8 +172,8 @@ class Gamee:
             if settings.USE_TICKETS_TO_SPIN is False:
                 return
 
-            while True:  # todo: бля это все по хорошему в run вынести
-                if spin_using_ticket_price < user_tickets:
+            while True:
+                if spin_using_ticket_price > user_tickets:
                     logger.info(
                         f'{self.session_name} | Not enough tickets for spin ({user_tickets} / {spin_using_ticket_price})')
                     return
@@ -181,8 +181,8 @@ class Gamee:
                     logger.info(f'{self.session_name} | Price to spin by tickets too high ({spin_using_ticket_price})')
                     return
 
-                await http_client.post(self.gamee_url, data=json.dumps(buy_spin_using_ticket))
-                resp = await http_client.post(self.gamee_url, data=json.dumps(daily_claim_prizes))
+                await http_client.post(url=self.gamee_url, data=json.dumps(buy_spin_using_ticket))
+                resp = await http_client.post(url=self.gamee_url, data=json.dumps(daily_claim_prizes))
                 resp_json = await resp.json()
 
                 reward_type = resp_json["result"]["reward"]["type"]
@@ -191,8 +191,8 @@ class Gamee:
                 logger.info(f"{self.session_name} | Earned by spin : {reward} {reward_type}")
 
                 resp = await http_client.post(
-                    self.gamee_url,
-                    json.dumps(daily_get_prizes),
+                    url=self.gamee_url,
+                    data=json.dumps(daily_get_prizes),
                 )
                 resp_json = await resp.json()
 
@@ -221,12 +221,17 @@ class Gamee:
                 "method": "user.getActivities",
                 "params": {"filter": "all", "pagination": {"offset": 0, "limit": 100}},
             }
+            print('Http Client headers:')
+            pprint(dict(http_client.headers))
             resp = await http_client.post(
-                self.gamee_url,
-                json.dumps(data),
+                url=self.gamee_url,
+                data=json.dumps(data),
             )
-            resp_json: dict = await resp.json()
-            result: dict = resp_json.get("result")
+            resp.raise_for_status()
+
+            resp_json = await resp.json()
+            pprint(resp_json)
+            result = resp_json.get("result")
             if result is None:
                 logger.error(f"{self.session_name} | Result not found in user activities")
                 return False
@@ -236,9 +241,10 @@ class Gamee:
                 activity_type = activity["type"]
                 is_claim = activity["isClaimed"]
                 if is_claim:
+                    logger.info(f"{self.session_name} | Claimed activity {activity_type}")
                     continue
 
-                logger.info(f"{self.session_name} | Activity type {activity_type}")
+                logger.info(f"{self.session_name} | Activity to claim: {activity_type}")
                 rewards = activity["rewards"]
                 virtual_token = rewards["virtualTokens"]
                 for token in virtual_token:
@@ -251,10 +257,10 @@ class Gamee:
                         "params": {"activityId": activity_id},
                     }
                     resp = await http_client.post(
-                        self.gamee_url,
-                        json.dumps(data),
+                        url=self.gamee_url,
+                        data=json.dumps(data),
                     )
-                    if resp.status_code != 200:
+                    if resp.status != 200:
                         logger.error(f"{self.session_name} | Error when claiming mining reward! (status code 200)")
                         continue
                     logger.success(f"{self.session_name} | Successfully claimed {amount} {name} !")
@@ -279,37 +285,29 @@ class Gamee:
                 "method": "miningEvent.startSession",
                 "params": {"miningEventId": event_id},
             }
-            data_claim_mining = {
-                "jsonrpc": "2.0",
-                "id": "miningEvent.claim",
-                "method": "miningEvent.claim",
-                "params": {
-                    "miningEventId": event_id,
-                },
-            }
 
             resp = await http_client.post(
-                self.gamee_url,
-                json.dumps(data),
+                url=self.gamee_url,
+                data=json.dumps(data),
             )
             resp_json = await resp.json()
             assets = resp_json["user"]["assets"]
             for asset in assets:
                 currency = asset["currency"]["ticker"]
                 amount = asset["amountMicroToken"] / 1000000
-                logger.info(f"{self} | Balance: {amount} {currency}")
+                logger.info(f"{self.session_name} | Balance: {amount} {currency}")
 
             mining = resp_json["result"]["miningEvent"]["miningUser"]
             if mining is None:
-                logger.error(f"{self.session_name} | Mining not started !")
+                logger.info(f"{self.session_name} | Mining not started")
                 while True:
-                    resp = await self.http(
-                        self.gamee_url,
-                        json.dumps(data_start_mining),
+                    resp = await http_client.post(
+                        url=self.gamee_url,
+                        data=json.dumps(data_start_mining),
                     )
                     resp_json = await resp.json()
                     if "error" in resp_json.keys():
-                        time.sleep(2)
+                        await asyncio.sleep(2)
                         continue
 
                     if "miningEvent" in resp_json["result"]:
@@ -327,9 +325,9 @@ class Gamee:
             if end:
                 logger.info(f"{self.session_name} | Mining has end!")
                 while True:
-                    resp = await self.http(
-                        self.gamee_url,
-                        json.dumps(data_start_mining),
+                    resp = await http_client.post(
+                        url=self.gamee_url,
+                        data=json.dumps(data_start_mining),
                     )
                     resp_json = await resp.json()
                     result = resp_json["result"]
@@ -339,7 +337,7 @@ class Gamee:
                         if msg == "mining session in progress.":
                             logger.info(f"{self.session_name} | Mining in progress")
                             return
-                        time.sleep(2)
+                        await asyncio.sleep(2)
                         continue
 
                     if result.get("miningEvent") is not None:
@@ -351,6 +349,9 @@ class Gamee:
             await asyncio.sleep(delay=3)
 
     async def run(self, proxy: str | None = None):
+        access_token_created_time = 0
+        farms = 3
+
         proxy_conn = ProxyConnector().from_url(proxy) if proxy else None
         tg_web_data = await self.get_tg_web_data(proxy=None)
         tg_web_data_res = unquote(string=tg_web_data)
@@ -358,19 +359,45 @@ class Gamee:
         user_id = tg_web_data_res.split('id":', maxsplit=1)[1].split(',"first_name', maxsplit=1)[0]
         print('user_id:', user_id)
 
-        async with aiofiles.open(self.uuid_file) as uuidr:
-            uuids: dict = json.loads(await uuidr.read())
+        async with aiofiles.open(self.uuid_file) as uuid_file:
+            uuids: dict = json.loads(await uuid_file.read())
 
-        uuuid = uuids.get(user_id)
-        if uuuid is None:
-            print('uuuid is None')
-            uuuid = uuid.uuid4().__str__()
-            uuids[user_id] = uuuid
-            async with aiofiles.open(self.uuid_file, "w") as uw:
-                await uw.write(json.dumps(uuids))
+        user_uuid = uuids.get(user_id)
+        if user_uuid is None:
+            user_uuid = uuid.uuid4().__str__()
+            uuids[user_id] = user_uuid
+            async with aiofiles.open(self.uuid_file, "w") as uuid_file:
+                await uuid_file.write(json.dumps(uuids))
 
-        headers['X-Install-Uuid'] = uuuid
+        headers['X-Install-Uuid'] = user_uuid
         headers['User-Agent'] = UserAgent(os='android').random
 
         async with aiohttp.ClientSession(headers=headers, connector=proxy_conn) as http_client:
-            ...
+            while True:
+                farms -= 1
+
+                if time() - access_token_created_time >= 3600:
+                    access_token = await self.login(http_client, tg_web_data=tg_web_data)
+                    http_client.headers['Authorization'] = f'Bearer {access_token}'
+                    headers['Authorization'] = f'Bearer {access_token}'
+                    access_token_created_time = time()
+
+                await self.claim_mining(http_client)
+                await self.start_mining(http_client)
+                await self.spin(http_client)
+                if farms == 0:
+                    sleep_time = uniform(*settings.SLEEP_BETWEEN_FARM)
+                    logger.info(f"{self.session_name} | Sleep {sleep_time}s")
+                    await asyncio.sleep(sleep_time)
+                    farms = 3
+                else:
+                    sleep_time = randint(2, 4)
+                    logger.info(f"{self.session_name} | Sleep {sleep_time}s")
+                    await asyncio.sleep(sleep_time)
+
+
+async def run_tapper(tg_client: Client, proxy: str | None):
+    try:
+        await Gamee(tg_client).run(proxy=proxy)
+    except InvalidSession:
+        logger.error(f"{tg_client.name} | Invalid Session")
